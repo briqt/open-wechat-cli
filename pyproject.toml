@@ -1,15 +1,20 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-wechat-cli"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "只读读取本地微信 / 企业微信历史的 CLI（当前覆盖 Windows 企业微信）"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Proprietary" }
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = ["pycryptodome>=3.18", "tzdata>=2024.1"]
+
+[project.urls]
+Repository = "https://github.com/briqt/open-wechat-cli"
+Issues = "https://github.com/briqt/open-wechat-cli/issues"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -22,6 +27,10 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/open-wechat-cli/skills/open-wechat-cli" = ["skills/open-wechat-cli/SKILL.md"]
+"share/doc/open-wechat-cli" = ["CONTRIBUTING.md", "CHANGELOG.md", "THIRD_PARTY_NOTICES.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

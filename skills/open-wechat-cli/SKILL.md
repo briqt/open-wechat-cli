@@ -21,11 +21,11 @@ description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话
 owc doctor            # 或 owc doctor --json
 ```
 
-如果 `owc` 连启动都失败（`No Python at ...`、`Scripts\python.exe` 不存在、`ModuleNotFoundError: open_wechat_cli`），先修解释器入口，不要怀疑业务逻辑：
+如果 `owc` 启动失败，先区分环境错误：`No Python at ...` 检查基础解释器；`ModuleNotFoundError: open_wechat_cli` 检查本项目是否安装在当前 Python 环境中。不要仅凭错误现象推断解释器被系统删除：
 
 ```bash
 py -3 -c "import sys; print(sys.executable)"    # 拿真实解释器
-# 删掉旧 venv 用该解释器重建，再 pip install -e .
+# 使用有效解释器新建 venv，再 python -m pip install .；开发安装见 CONTRIBUTING.md
 ```
 
 判断：
@@ -41,7 +41,7 @@ py -3 -c "import sys; print(sys.executable)"    # 拿真实解释器
 owc history --account <corp_id> --limit 20 --tz Asia/Shanghai
 ```
 
-一条命令走完：定位账号 → 取 key（首次现场扫内存并落 0600 key 文件）→ 快照 → 解密 → 查询。
+一条命令串起定位账号、key、数据库复制、解密和查询。key 缓存含敏感信息；Unix 上尝试 chmod 0600，Windows 需依靠目录和 NTFS ACL 保护，不能把 chmod 当作隔离保证。
 
 需要复用已有解密结果时加 `--reuse`；换缓存目录用 `--cache-dir`。
 
@@ -75,7 +75,7 @@ owc messages export --db-dir <dec>/Data --out <dir>/msgs.jsonl --since 2026-10-2
 |---|---|---|
 | `PRECONDITION` | 客户端没运行 / 没登录 / 平台不对 | 先登录企业微信，再重跑；跨机请到 Windows 上跑取 key 那一步 |
 | `KEY_NOT_FOUND` | 内存里没有通过校验的 key | 确认账号当前已登录；加 `--step 1` 放宽对齐；`--time-budget` 去掉让它扫完 |
-| `FORMAT_MISMATCH` | page1 结构或页大小不符 | 客户端可能升级了；先 `owc key verify` 确认 key，再按 README「原理」里的常量锚点重新定位 codec |
+| `FORMAT_MISMATCH` | page1 结构或页大小不符 | 用 `owc key verify` 检查 key；保留脱敏的版本和错误信息，按不兼容处理，不输出未验证数据 |
 | `SNAPSHOT` | 库被独占锁定 / 空间不足 | 关掉占用窗口；换 `--out` 到空间足够的盘；2GB 库边写边拷撕裂时重拍一次 |
 | `DATA` | `quick_check` 不过 / 表列缺失 | 重跑 `owc snapshot`；仍失败看 `owc schema` 的列映射 |
 

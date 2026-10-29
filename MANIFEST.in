@@ -1,0 +1,12 @@
+include LICENSE README.md CONTRIBUTING.md CHANGELOG.md THIRD_PARTY_NOTICES.md
+recursive-include src *.py
+recursive-include tests *.py
+recursive-include scripts *.py
+recursive-include skills *.md
+prune .doc
+prune .scratch
+prune .venv
+prune runtime
+prune build
+prune dist
+global-exclude *.pyc *.pyo .DS_Store
