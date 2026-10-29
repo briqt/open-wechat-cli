@@ -19,3 +19,12 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# 本地虚拟环境
+/.venv/
+.pytest_cache/
+
+# 构建产物
+/dist/
+/build/
+**/*.egg-info/
