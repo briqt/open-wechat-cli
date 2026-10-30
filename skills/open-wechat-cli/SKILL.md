@@ -69,6 +69,7 @@ owc messages export --db-dir <dec>/Data --out <dir>/msgs.jsonl --since 2026-10-2
 - 导出加 `--copy-media`（配合 `--media-out`）会把附件复制出来；语音复制时补 `.silk` 后缀（企微缓存无扩展名，内容是 silk 容器）。
 - 链接卡片（文档、公众号、小程序、微盘）落在 `link{url,title,desc,icon}`，`type_label` 区分 `doc_link` / `article` / `miniprogram` / `drive_file` / `drive_notice`。
 - 聊天记录/合并转发是 `chat_record`：`forward{title,total,members,items[]}`，子消息带 `sender_name / send_time_epoch / content_type / text / media / link / forward / entries / quote`（转发的转发最多展开三层）。
+- 撤回后残留的媒体（`recalled_media`）没有正文，但 `media[]` 里有名字/体积/尺寸/时长/缩略图，`text` 是"已撤回的消息（…）"；转发子消息若标了 `payload_empty`，说明客户端把内容清空了。
 - 撤回通知（`system`/`recall`）如果有对应撤回记录，`text` 会是"该消息已被撤回"，`recalled{revoker_id,revoked_at}` 给撤回者与时间；拿不到就保持空正文，不猜。
 - 引用回复落在 `quote{sender_name,title,text,forward,media}`；图片 OCR 落在 `media[].ocr`；卡片/小程序标题等附属文本落在 `extra_text`——它们不混进 `text`，但 `--query` 会一起检索。
 - 语音是 SILK v3（`\x02#!SILK_V3`），播放前用 `owc media decode --in <目录> --out <目录>` 转 wav；解码器由外部提供（`--decoder` 模板 / `OWC_SILK_DECODER` / PATH 上的 `silk_v3_decoder`），导出加 `--decode-voice` 会在复制后顺手转码，缺解码器时给 `DEPENDENCY` 而不是静默跳过。

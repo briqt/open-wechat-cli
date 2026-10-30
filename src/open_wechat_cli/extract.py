@@ -42,12 +42,13 @@ TYPE_LABELS = {
     3: "image",
     4: "chat_record",
     13: "doc_link",
+    22: "recalled_media",
     14: "image",
     15: "file",
     16: "voice",
     20: "file",
     8: "file",
-    22: "recall",
+    22: "recalled_media",
     40: "call",
     82: "stats_report",
     212: "bot_card",
@@ -434,6 +435,15 @@ def _attach_meta_extras(node: dict, meta: dict) -> None:
         if leftover:
             node["ocr"] = leftover
     extras = _extra_texts(meta)
+    for no, values in meta.items():
+        if no in (1042, 1034, 1002):
+            continue
+        for wt, value in values:
+            if wt != proto.WT_LEN or not isinstance(value, bytes):
+                continue
+            for text in _harvest_strings(value, limit=4):
+                if text not in extras:
+                    extras.append(text)
     if extras:
         node["extra_text"] = "\n".join(dict.fromkeys(extras))
 
@@ -535,7 +545,7 @@ def _forward(buf: bytes, depth: int = 0) -> dict | None:
             "forward": None,
             "entries": [],
         }
-        att = _first_len(g, 103)
+        att = _first_len(g, 103) or _first_len(g, 102)
         if att:
             kind = {14: "image", 15: "file", 16: "voice", 23: "video"}.get(ctype or 14, "image")
             desc = _media_descriptor(att, kind)
@@ -546,6 +556,10 @@ def _forward(buf: bytes, depth: int = 0) -> dict | None:
             item["link"] = _link_from_payload(card)
             if item["link"] and not item["text"]:
                 item["text"] = _clean(item["link"].get("title") or item["link"].get("url"))
+            elif not item["link"]:
+                leftover = _clean(_first_str(_fmap(card), 4))
+                if leftover:
+                    item["extra_text"] = leftover
         sticker = _first_len(g, 106)
         if sticker:
             sf = _fmap(sticker)
@@ -598,6 +612,10 @@ def _forward(buf: bytes, depth: int = 0) -> dict | None:
                 if not item["text"]:
                     item["text"] = _clean(_wrap_text(nested))
 
+        if (any(k in g for k in (101, 102, 103, 105, 106, 107))
+                and not any([item["text"], item["link"], item["media"],
+                             item["forward"], item["entries"]])):
+            item["payload_empty"] = True
         meta = _fmap(_first_len(g, 17))
         if meta:
             _attach_meta_extras(item, meta)
@@ -617,11 +635,12 @@ def _forward(buf: bytes, depth: int = 0) -> dict | None:
 
 
 def _link(url=None, title=None, desc=None, icon=None, extra=None) -> dict | None:
-    if not any((url, title, desc, icon, extra)):
+    cleaned_extra = {k: v for k, v in (extra or {}).items() if v}
+    if not any((url, title, desc, icon, cleaned_extra)):
         return None
     out = {"url": url, "title": _clean(title), "desc": _clean(desc), "icon": icon}
-    if extra:
-        out["extra"] = extra
+    if cleaned_extra:
+        out["extra"] = cleaned_extra
     return out
 
 
@@ -778,11 +797,64 @@ _CARD_TYPES = {8, 13, 20, 26, 31, 35, 38, 40, 69, 78, 82, 132, 141, 145, 212, 22
                503, 515, 516, 529, 561, 565, 573, 580, 1022, 1027}
 
 
+def _handle_recalled_media(content: bytes, out: dict) -> None:
+    """22：撤回后残留的媒体消息（云盘键 + 尺寸 + 缩略图，正文已撤回）。
+
+    企微撤回时把原消息的正文清掉，但文件/视频的元信息还在。这里如实说"已撤回"，
+    并把还能拿到的体积、尺寸、缩略图挂上，不假装有正文。
+    """
+    fm = _fmap(content)
+    size = _first_int(fm, 3)
+    width = _first_int(fm, 5)
+    height = _first_int(fm, 6)
+    thumb = _first_url(fm, (7,))
+    key = _first_str(fm, 2)
+    kind = "video" if (width and height) else "file"
+    raw_name = _first_str(fm, 107) or _first_str(fm, 1)
+    if raw_name and media.is_ascii_hex(raw_name.strip("/")):
+        raw_name = None
+    name = (raw_name or "").lstrip("/") or None
+    name_source = "message" if name else None
+    if not name:
+        seed = (_first_str(fm, 9) or key or "")[:8]
+        if seed:
+            name = f"{kind}-{seed}"
+            name_source = "synthetic"
+    duration = _first_int(fm, 17)
+    source_path = _first_str(fm, 203) or _first_str(fm, 202)
+    media_item = {
+        "kind": kind, "name": name, "name_source": name_source, "ext": None, "size": size,
+        "width": width, "height": height,
+        "md5": _first_str(fm, 9), "key": None,
+        "duration_s": round(duration / 1000, 1) if duration and duration > 600 else duration,
+        "source": "cloud",
+    }
+    if source_path:
+        media_item["source_path"] = source_path
+    out["media"].append(media_item)
+    bits = ["已撤回的消息"]
+    if width and height:
+        bits.append(f"{width}×{height}")
+    if isinstance(size, int) and size > 0:
+        bits.append(f"{size / 2**20:.1f} MiB")
+    if name:
+        bits.append(name)
+    out["text"] = "（" + "，".join(bits) + "）"
+    if thumb:
+        out["link"] = _link(url=thumb, title="撤回前缩略图", icon=thumb)
+    if key:
+        out["ref"] = key[:48]
+
 def _handle_weather(content: bytes, out: dict) -> None:
     """132：天气卡片（`1` 天气、`3` 提示、`12` 温度、`5` 图标、`6` 地址列表）。"""
     fm = _fmap(content)
     parts = [p for p in (_first_str(fm, 1), _first_str(fm, 12),
                          _first_str(fm, 14) or _first_str(fm, 3)) if p]
+    if not parts:
+        # 老版本把整段提示塞在 `6` 里
+        legacy = _clean(_first_str(fm, 6))
+        if legacy:
+            parts = [re.sub(r"^[?？]+", "", legacy).strip()]
     out["link"] = _link(url=None, title=_first_str(fm, 1), desc=_first_str(fm, 3),
                         icon=_first_str(fm, 5), extra={"date": _first_str(fm, 2)})
     out["text"] = _clean(" · ".join(parts))
@@ -1126,6 +1198,7 @@ _HANDLERS = {
     "article": _handle_article,
     "sticker": _handle_sticker,
     "weather": _handle_weather,
+    "recalled_media": _handle_recalled_media,
     "file_card": _handle_file_card,
     "call": _handle_call,
     "stats_report": _handle_stats_report,
@@ -1146,6 +1219,7 @@ _TYPE_HANDLERS = {
     0: "text", 2: "text",
     4: "chat_record",
     13: "doc_link",
+    22: "recalled_media",
     31: "payload_card", 35: "payload_card", 38: "payload_card",
     78: "article",
     80: "rich_card",
@@ -1328,7 +1402,8 @@ def searchable(body: dict) -> str:
             parts.append(item.get("extra_text") or "")
             parts.extend(o.get("text") or "" for o in item.get("ocr") or [])
             inner = item.get("link") or {}
-            parts.extend([inner.get("title") or "", inner.get("url") or ""])
+            parts.extend([inner.get("title") or "", inner.get("desc") or "",
+                          inner.get("url") or ""])
             parts.extend(str(v) for v in (inner.get("extra") or {}).values()
                          if isinstance(v, str))
             parts.extend(m.get("name") or "" for m in item.get("media") or [])
