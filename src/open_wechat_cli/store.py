@@ -10,13 +10,14 @@ import base64
 import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 from zoneinfo import ZoneInfo
 
-from . import extract
+from . import extract, media, revoke
 from .errors import DataError, UsageError
 from .sqlite_util import connect, pick_column, pick_table, table_info
 
@@ -29,7 +30,7 @@ MESSAGE_COLUMNS = {
     "sender": ("sender_id", "sender", "from_id", "talker"),
     "conv": ("conversation_id", "conv_id", "session_id", "chat_id"),
     "type": ("content_type", "msg_type", "type", "message_type"),
-    "time": ("send_time", "create_time", "timestamp", "time", "msg_time"),
+    "time": ("send_time", "create_time", "timestamp", "time", "msg_time", "ts"),
     "content": ("content", "body", "msg_content", "payload"),
 }
 CONVERSATION_COLUMNS = {
@@ -46,6 +47,7 @@ USER_COLUMNS = {
 }
 
 MAX_LIMIT = 1000
+_UNSET = object()
 
 
 @dataclass
@@ -100,13 +102,16 @@ def decode_cursor(cursor: str | None) -> dict:
 
 
 class Store:
-    def __init__(self, db_dir: str) -> None:
+    def __init__(self, db_dir: str, *, account_root: str | None = None) -> None:
         self.db_dir = Path(db_dir)
         if not self.db_dir.is_dir():
             raise DataError(
                 f"解密目录不存在：{db_dir}",
                 repair="先跑 `owc decrypt`，或把 --db-dir 指到解密产物目录",
             )
+        self.account_root = account_root
+        self._revokes: revoke.RevokeIndex | None | object = _UNSET
+        self._media = media.MediaIndex.from_account_root(account_root) if account_root else None
         self._schema: dict[str, TableSpec | None] | None = None
         self._convs: dict[str, dict] | None = None
         self._users: dict[str, str] | None = None
@@ -190,13 +195,46 @@ class Store:
         return convs
 
     def self_id(self) -> str | None:
-        """把自己认出来：出现在最多会话里的 sender_id 就是本账号。
+        """把自己认出来：出现在最多单聊里的那个 id 就是本账号。
 
         单聊 session 里 name 常为空（`S:a_b`），有了自己就能挑出对方的名字。
+        优先用会话表推断（几百行），避免在 2 GB 的消息表上跑 GROUP BY——
+        那个查询实测要 1.5 s，而每条 `messages list` 都会经过这里。
         """
         if getattr(self, "_self_id", "__unset__") != "__unset__":
             return self._self_id
-        self._self_id = None
+        self._self_id = self._self_id_from_conversations() or self._self_id_from_messages()
+        return self._self_id
+
+    def _self_id_from_conversations(self) -> str | None:
+        spec = self.schema()["conversation"]
+        if not spec:
+            return None
+        con = None
+        try:
+            con = self._connect("session.db")
+            counts: dict[str, int] = {}
+            for (cid,) in con.execute(f'select "{spec.columns["id"]}" from "{spec.table}"'):
+                cid_s = _s(cid) or ""
+                if not cid_s.startswith("S:") or "_" not in cid_s:
+                    continue
+                left, _, right = cid_s[2:].partition("_")
+                for peer in (left, right):
+                    if peer:
+                        counts[peer] = counts.get(peer, 0) + 1
+            if not counts:
+                return None
+            best = max(counts.items(), key=lambda kv: kv[1])
+            # 至少要出现在两个单聊里，否则宁可退化成消息表推断
+            return best[0] if best[1] >= 2 else None
+        except Exception:  # noqa: BLE001 - 缺会话表时退化到消息表
+            return None
+        finally:
+            if con is not None:
+                con.close()
+
+    def _self_id_from_messages(self) -> str | None:
+        """兜底：在最近一小段消息里找出现最多的 sender（避免全表聚合）。"""
         spec = self.schema()["message"]
         if not spec:
             return None
@@ -205,17 +243,18 @@ class Store:
             con = self._connect("message.db")
             cols = spec.columns
             row = con.execute(
-                f'select "{cols["sender"]}", count(distinct "{cols["conv"]}") as c '
-                f'from "{spec.table}" group by 1 order by c desc limit 1'
+                f'select "{cols["sender"]}", count(*) as c from '
+                f'(select "{cols["sender"]}" from "{spec.table}" '
+                f'order by "{cols["time"]}" desc limit 20000) group by 1 order by c desc limit 1'
             ).fetchone()
             if row and row[0] is not None:
-                self._self_id = _s(row[0])
+                return _s(row[0])
+            return None
         except Exception:  # noqa: BLE001 - 缺 message.db 时只是少个名字
-            self._self_id = None
+            return None
         finally:
             if con is not None:
                 con.close()
-        return self._self_id
 
     def _resolve_single_chat_names(self, convs: dict[str, dict]) -> None:
         me = self.self_id()
@@ -353,6 +392,96 @@ class Store:
         next_cursor = encode_cursor({"id": items[-1]["user_id"]}) if more and items else None
         return {"items": items, "next_cursor": next_cursor}
 
+    # -- 撤回 ------------------------------------------------------------ #
+    def revokes(self) -> revoke.RevokeIndex | None:
+        """撤回记录索引；库里没有撤回表时返回 None（不是错误）。"""
+        if self._revokes is _UNSET:
+            self._revokes = revoke.RevokeIndex.load(self.db_dir)
+        return self._revokes  # type: ignore[return-value]
+
+    # -- 兼容性索引 ------------------------------------------------------ #
+    #: 查询用索引：客户端建的库里没有 conversation_id / send_time 索引，
+    #: 2 GB 库上任何"按会话/按时间"的查询都会退化成全表扫描（实测 1.3 s）。
+    #: 索引建在我们自己的解密副本上，重建成本一次性，删副本即回收。
+    INDEXES = {
+        "owc_conv_time_index": ("conv", "time"),
+        "owc_send_time_index": ("time",),
+    }
+
+    def ensure_index(self, *, progress=None) -> list[str]:
+        """在解密副本上补查询索引；已存在则直接返回。需要写权限。
+
+        索引列按 schema 映射出来的真实列名生成——不同客户端版本表名/列名可能不同，
+        这里不能写死 `message_table(conversation_id, send_time)`。
+        """
+        try:
+            spec = self.schema()["message"]
+        except sqlite3.Error:
+            return []
+        if spec is None:
+            return []
+        path = self.db_path("message.db")
+        if not path.exists():
+            return []
+        created: list[str] = []
+        try:
+            con = sqlite3.connect(str(path), timeout=30.0)
+        except sqlite3.Error:
+            return []
+        try:
+            existing = {r[0] for r in con.execute(
+                "select name from sqlite_master where type='index'")}
+            for name, logicals in self.INDEXES.items():
+                columns = [spec.columns.get(k) for k in logicals]
+                if any(c is None for c in columns):
+                    continue
+                if name in existing:
+                    continue
+                if progress:
+                    progress(f"建索引 {name}（{', '.join(columns)}）")
+                t0 = time.time()
+                cols_sql = ", ".join(f'"{c}"' for c in columns)
+                con.execute(f'create index if not exists {name} '
+                            f'on "{spec.table}"({cols_sql})')
+                con.commit()
+                created.append(name)
+                if progress:
+                    progress(f"建索引 {name} 完成 {time.time() - t0:.1f}s")
+        except sqlite3.Error:
+            # 只读介质、被占用等：退回全表扫描，不把查询能力打掉
+            return created
+        finally:
+            con.close()
+        return created
+    def _resolve_media(self, body: dict) -> None:
+        """把消息里的资源键映射到账号 Cache 下的实际文件；映射不到就留空，不猜路径。"""
+        def resolve(item: dict) -> None:
+            info = self._media.resolve(item.get("key")) if self._media else None
+            if info:
+                item["local_path"] = info["path"]
+                item["exists"] = info["exists"]
+                if not item.get("size") and info.get("size"):
+                    item["size"] = info["size"]
+                # 缓存里的文件名比消息里的更可信（消息里可能是合成名或缺失）
+                if item.get("name_source") != "message":
+                    item["name"] = Path(info["path"]).name
+                    item["name_source"] = "cache"
+            else:
+                item.setdefault("local_path", None)
+                item.setdefault("exists", False)
+
+        def walk_forward(fwd: dict | None) -> None:
+            if not fwd:
+                return
+            for item in fwd.get("items") or []:
+                for sub in item.get("media") or []:
+                    resolve(sub)
+                walk_forward(item.get("forward"))
+
+        for item in body.get("media") or []:
+            resolve(item)
+        walk_forward(body.get("forward"))
+
     def iter_messages(
         self,
         *,
@@ -429,9 +558,18 @@ class Store:
                     sender_s = _s(sender)
                     conv_info = convs.get(cid_s, {})
                     body = extract.extract(_int(ctype), _bytes(content))
+                    self._resolve_media(body)
                     text = body["text"]
+                    recalled = None
+                    if text is None and self.revokes() is not None:
+                        try:
+                            recalled = self.revokes().match(mid, _int(stime))
+                        except Exception:  # noqa: BLE001 - 还原失败不该打断查询
+                            recalled = None
+                        if recalled:
+                            text = recalled.get("text") or "该消息已被撤回"
                     if query:
-                        hay = f"{text or ''}\n{conv_info.get('name', '')}"
+                        hay = f"{extract.searchable(body)}\n{conv_info.get('name', '')}"
                         if query.lower() not in hay.lower():
                             continue
                     yielded += 1
@@ -448,6 +586,16 @@ class Store:
                         "text": text,
                         "urls": body["urls"],
                         "ref": body["ref"],
+                        "link": body["link"],
+                        "media": body["media"],
+                        "segments": body["segments"],
+                        "entries": body["entries"],
+                        "forward": body["forward"],
+                        "voice": body["voice"],
+                        "recalled": recalled,
+                        "quote": body["quote"],
+                        "ocr": body["ocr"],
+                        "extra_text": body["extra_text"],
                         "_cursor_id": mid if isinstance(mid, int) else _s(mid),
                     }
                     if max_items and yielded >= max_items:

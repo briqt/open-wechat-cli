@@ -17,6 +17,23 @@ SCHEMA = 1
 _JSON_MODE = False
 
 
+def configure_stdio() -> None:
+    """把 stdout/stderr 固定成 UTF-8。
+
+    结果里有中文会话名和正文；重定向到文件/管道时 Python 默认改用 locale 编码
+    （中文 Windows 是 cp936），消费方按 UTF-8 解析就会拿到非法字节，甚至因
+    超出 GBK 的字符（emoji 等）在 flush 时抛 UnicodeEncodeError。控制台本身
+    仍由 Windows 控制台按 UTF-8 转码，行为不变。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if (stream.encoding or "").lower().replace("-", "") == "utf8":
+                continue
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            continue
+
+
 def set_json_mode(enabled: bool) -> None:
     """在 --json 下把诊断也写成一行一行的 JSON，便于"最后一行是错误体"的解析。"""
     global _JSON_MODE

@@ -149,3 +149,52 @@ def test_missing_db_has_repair(db_dir):
     with pytest.raises(DataError) as exc:
         s.messages(limit=1)
     assert "message.db" in exc.value.message
+
+
+def test_ensure_index_is_idempotent_and_keeps_queries_working(db_dir):
+    """索引是可选加速：建完只多两个索引，查询结果不变，重复调用不再重建。"""
+    s = store.Store(str(db_dir))
+    created = s.ensure_index()
+    assert set(created) == set(store.Store.INDEXES)
+    with sqlite3.connect(db_dir / "message.db") as con:
+        names = {r[0] for r in con.execute("select name from sqlite_master where type='index'")}
+    assert set(store.Store.INDEXES) <= names
+
+    assert s.ensure_index() == []          # 第二次不再重建
+    page = store.Store(str(db_dir)).messages(limit=10, conv="c1")
+    assert [m["message_id"] for m in page["items"]] == ["m1", "m2"]
+
+
+def test_ensure_index_uses_mapped_table_and_columns(tmp_path):
+    """索引要按 schema 映射出来的真实表名/列名建，不能写死 message_table。"""
+    con = sqlite3.connect(tmp_path / "message.db")
+    con.execute(
+        "create table messages (msg_id text, sender text, conv_id text, msg_type integer,"
+        " ts integer, body blob)"
+    )
+    con.execute("insert into messages values ('m1','u1','c1',2,1700000000,x'00')")
+    con.commit()
+    con.close()
+
+    s = store.Store(str(tmp_path))
+    created = s.ensure_index()
+    assert set(created) == set(store.Store.INDEXES)
+    with sqlite3.connect(tmp_path / "message.db") as check:
+        rows = {r[0]: r[1] for r in check.execute(
+            "select name, sql from sqlite_master where type='index'")}
+    assert all('"messages"' in sql for sql in rows.values())
+    assert any('"conv_id"' in sql and '"ts"' in sql for sql in rows.values())
+
+
+def test_ensure_index_on_unwritable_copy_degrades(tmp_path, db_dir, monkeypatch):
+    """建不了索引（只读介质/被占用）时不能把查询能力打掉。"""
+    s = store.Store(str(db_dir))
+
+    def boom(*args, **kwargs):
+        raise sqlite3.OperationalError("readonly database")
+
+    monkeypatch.setattr(store.sqlite3, "connect", boom)
+    assert s.ensure_index() == []
+    monkeypatch.undo()
+    assert s.messages(limit=1)["items"]
+
