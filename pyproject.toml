@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-wechat-cli"
-version = "0.1.0a5"
+version = "0.1.0a7"
 description = "只读读取本地微信 / 企业微信历史的 CLI（当前覆盖 Windows 企业微信）"
 readme = "README.md"
 requires-python = ">=3.10"

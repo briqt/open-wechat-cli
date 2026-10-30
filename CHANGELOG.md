@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.0a7 — 2026-10-30
+
+- 最近消息导出：`messages export` 新增 `--limit` / `--order`，`--order desc --limit N` 取指定副本中的最近 N 条，查询层只读取所需数量，输出稿恢复时间正序。
+- 新增导出可观测性：结果包含 `data_cutoff` 和 `freshness`（副本 mtime、年龄、快照创建时间）；副本超过 5 分钟时给出刷新提示。生成时间不再被当作数据最新时间。
+- `--limit-per-conv` 明确仅适用于 TXT，其他格式返回 `USAGE`，避免参数被静默忽略。
+- Agent/Skill 使用体验：补充意图到命令的路由表，区分实时 Windows WXWork 与 snapshot/decrypted 离线路径。
+- 补充 JSON 成功/失败 envelope 示例、stdout/stderr 解析约定、PowerShell 可复制模板、history 后导出附件的二阶段流程。
+- 补充 `USAGE` / `DEPENDENCY` 错误恢复说明，修正 `--key-file` 缺失行为描述，并明确 key、聊天正文和附件的敏感输出约束。
+- 修正 `media decode` 错误 envelope 的 command 标识，使嵌套命令显示为 `media decode`。
+- 新增 Agent 易用性与 Skill 审查记录，列出 argparse 错误统一、导出幂等、缓存签名和凭据保护等后续改进项。
+
 ## 0.1.0a5 — 2026-10-30
 
 - 撤回残留媒体（content_type 22）：找回被撤回文件/视频的名字、体积、尺寸、时长、缩略图与本机源路径，`text` 如实写"已撤回的消息（270×480，20.2 MiB，xxx.mp4）"，不假装有正文。

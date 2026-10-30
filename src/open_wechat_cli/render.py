@@ -93,6 +93,16 @@ def _media_src(item: dict, out_dir: Path) -> tuple[str | None, bool]:
     return (item.get("name") or None), False
 
 
+def _media_identity(item: dict) -> tuple:
+    """同一附件在 `entries[]` 与 `media[]` 里各出现一次，渲染时按这个标识去重。"""
+    return (
+        item.get("key") or "",
+        item.get("name") or "",
+        item.get("size") or 0,
+        item.get("local_path") or "",
+    )
+
+
 KIND_LABELS = {"image": "图片", "file": "文件", "voice": "语音", "video": "视频",
                "sticker": "表情", "audio": "音频"}
 
@@ -190,11 +200,14 @@ def _md_body(msg: dict, out_dir: Path, indent: str = "  ") -> list[str]:
         else:
             lines.append(f"{indent}🔗 {title}{tail}")
 
+    rendered: set[tuple] = set()
     for entry in msg.get("entries") or []:
         if entry.get("kind") == "text" and entry.get("text") and entry["text"] not in (text or ""):
             lines.append(f"{indent}{_md_inline(entry['text'])}")
         elif entry.get("kind") == "media":
-            lines.extend(_md_media([entry["media"]], out_dir, indent))
+            media = entry.get("media") or {}
+            rendered.add(_media_identity(media))
+            lines.extend(_md_media([media], out_dir, indent))
 
     voice = msg.get("voice") or {}
     if voice:
@@ -206,7 +219,7 @@ def _md_body(msg: dict, out_dir: Path, indent: str = "  ") -> list[str]:
         else:
             lines.append(f"{indent}🎙 语音 {dur}（缓存未落地）")
 
-    media_items = msg.get("media") or []
+    media_items = [m for m in (msg.get("media") or []) if _media_identity(m) not in rendered]
     if media_items and not voice:
         lines.extend(_md_media(media_items, out_dir, indent))
 
@@ -382,11 +395,14 @@ def _html_body(msg: dict, out_dir: Path) -> str:
         desc_html = f'<div class="d">{_esc(desc)}</div>' if desc and desc != title else ""
         parts.append(f'<div class="card"><div class="t">{head}</div>{desc_html}</div>')
 
+    rendered: set[tuple] = set()
     for entry in msg.get("entries") or []:
         if entry.get("kind") == "text" and entry.get("text") and entry["text"] not in text:
             parts.append(f'<div class="text">{_esc(entry["text"])}</div>')
         elif entry.get("kind") == "media":
-            parts.append(_html_media([entry["media"]], out_dir))
+            media = entry.get("media") or {}
+            rendered.add(_media_identity(media))
+            parts.append(_html_media([media], out_dir))
 
     voice = msg.get("voice") or {}
     if voice:
@@ -401,7 +417,7 @@ def _html_body(msg: dict, out_dir: Path) -> str:
         else:
             parts.append(f'<div class="cap">🎙 语音 {dur}（缓存未落地）</div>')
 
-    media_items = msg.get("media") or []
+    media_items = [m for m in (msg.get("media") or []) if _media_identity(m) not in rendered]
     if media_items and not voice:
         parts.append(_html_media(media_items, out_dir))
 

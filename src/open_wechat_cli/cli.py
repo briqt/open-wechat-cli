@@ -538,16 +538,48 @@ def _copy_one(item: dict, out_dir: Path, seen: dict[str, str]) -> None:
     item["copy"] = cached
 
 
+def _export_messages(store, args, since, until) -> list[dict]:
+    """读取导出范围；desc 用于取最近消息，输出稿统一恢复时间正序。"""
+    items = list(store.iter_messages(
+        conv=args.conv, since=since, until=until, query=args.query,
+        tz_name=args.tz, order=args.order,
+        max_items=args.limit if args.limit and not args.query else None,
+    ))
+    if args.limit:
+        items = items[:args.limit]
+    if args.order == "desc":
+        items.reverse()
+    return items
+
+
+def _data_freshness(db_dir: str) -> dict:
+    """报告解密副本的可观测时间，不把副本时间冒充源库实时状态。"""
+    db = Path(db_dir) / "message.db"
+    info = {"message_db_mtime": None, "age_s": None, "snapshot_created_at": None}
+    try:
+        mtime = db.stat().st_mtime
+        info["message_db_mtime"] = datetime.fromtimestamp(mtime).astimezone().isoformat(timespec="seconds")
+        info["age_s"] = max(0, round(time.time() - mtime, 1))
+    except OSError:
+        pass
+    manifest = Path(db_dir).resolve().parent.parent / "snapshot" / "manifest.json"
+    try:
+        info["snapshot_created_at"] = json.loads(manifest.read_text(encoding="utf-8")).get("created_at")
+    except (OSError, ValueError):
+        pass
+    return info
+
+
 def _export_rendered(args, store, since, until, fmt: str, out: Path,
-                     media_out: Path, copied: int) -> int:
+                     media_out: Path, copied: int, messages: list[dict] | None = None,
+                     freshness: dict | None = None) -> int:
     """md/html：给人看的稿子。默认把附件复制出来，图片和语音才有链接可点。"""
-    messages: list[dict] = []
+    messages = list(messages or _export_messages(store, args, since, until))
     seen: dict[str, str] = {}
     count = 0
     extra = 0
     media_out.mkdir(parents=True, exist_ok=True)
-    for msg in store.iter_messages(conv=args.conv, since=since, until=until,
-                                   query=args.query, tz_name=args.tz):
+    for msg in messages:
         targets = list(msg.get("media") or [])
         for item in (msg.get("forward") or {}).get("items") or []:
             targets.extend(item.get("media") or [])
@@ -557,7 +589,6 @@ def _export_rendered(args, store, since, until, fmt: str, out: Path,
             if item.get("copy") and item["copy"] != before:
                 extra += 1
         msg.pop("_cursor_id", None)
-        messages.append(msg)
         count += 1
         if count > MAX_RENDER:
             raise DataError(
@@ -573,6 +604,8 @@ def _export_rendered(args, store, since, until, fmt: str, out: Path,
         "条数": stats["messages"],
         "时间范围": f"{messages[0]['send_time']} → {messages[-1]['send_time']}" if messages else None,
         "生成时间": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "数据截止": messages[-1]["send_time"] if messages else None,
+        "副本年龄": f'{freshness["age_s"]}s' if freshness and freshness.get("age_s") is not None else None,
         "工具": f"owc {__version__}（只读）",
     }
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -584,7 +617,9 @@ def _export_rendered(args, store, since, until, fmt: str, out: Path,
     out.write_text(body, encoding="utf-8")
     payload = {"out": str(out), "format": fmt, "messages": stats["messages"],
                "days": stats["days"], "first_day": stats["first"], "last_day": stats["last"],
-               "media_copied": extra, "media_dir": str(media_out)}
+               "media_copied": extra, "media_dir": str(media_out),
+               "data_cutoff": messages[-1]["send_time"] if messages else None,
+               "freshness": freshness}
     output.emit(payload, command="messages export", as_json=args.json,
                 text=f"{stats['messages']} 条 / {stats['days']} 天 -> {out}；"
                      f"附件 {extra} 个 -> {media_out}")
@@ -598,7 +633,14 @@ def cmd_messages_export(args) -> int:
     since = _parse_when(args.since, args.tz)
     until = _parse_when(args.until, args.tz)
     fmt = args.format
+    if args.limit_per_conv and fmt != "txt":
+        raise UsageError("--limit-per-conv 目前只适用于 txt 导出",
+                         repair="去掉 --limit-per-conv，或改用 --format txt")
     out = Path(args.out) if args.out else _default_export_out(fmt, args.conv)
+    freshness = _data_freshness(args.db_dir)
+    if freshness.get("age_s") is not None and freshness["age_s"] > 300:
+        output.diag("[freshness] 当前解密副本已超过 5 分钟；需要最新数据请先运行 `owc history --refresh`")
+    messages = _export_messages(store, args, since, until)
     want_media = args.copy_media or fmt in ("md", "html")
     if args.media_out:
         media_out = Path(args.media_out)
@@ -652,7 +694,8 @@ def cmd_messages_export(args) -> int:
         msg.pop("_cursor_id", None)
 
     if fmt in ("md", "html"):
-        return _export_rendered(args, store, since, until, fmt, out, media_out, copied)
+        return _export_rendered(args, store, since, until, fmt, out, media_out, copied,
+                                 messages=messages, freshness=freshness)
 
     base_dir = out.parent.resolve()
 
@@ -676,15 +719,16 @@ def cmd_messages_export(args) -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         count = 0
         with out.open("w", encoding="utf-8") as fh:
-            for msg in store.iter_messages(conv=args.conv, since=since, until=until,
-                                           query=args.query, tz_name=args.tz):
+            for msg in messages:
                 prepare(msg)
                 relativize(msg)
                 fh.write(json.dumps(msg, ensure_ascii=False) + "\n")
                 count += 1
         payload = {"out": str(out), "format": fmt, "messages": count,
                    "media_copied": copied if want_media else None,
-                   "media_dir": str(media_out) if want_media else None}
+                   "media_dir": str(media_out) if want_media else None,
+                   "data_cutoff": messages[-1]["send_time"] if messages else None,
+                   "freshness": freshness}
         output.emit(payload, command="messages export", as_json=args.json,
                     text=f"{count} 条 -> {out}" + (f"；附件 {copied} 个 -> {media_out}"
                                                    if want_media else ""))
@@ -694,8 +738,7 @@ def cmd_messages_export(args) -> int:
         files: dict[str, object] = {}
         counts: dict[str, int] = {}
         try:
-            for msg in store.iter_messages(conv=args.conv, since=since, until=until,
-                                           query=args.query, tz_name=args.tz):
+            for msg in messages:
                 prepare(msg)
                 cid = msg["conv_id"] or "unknown"
                 fh = files.get(cid)
@@ -715,9 +758,11 @@ def cmd_messages_export(args) -> int:
             for fh in files.values():
                 fh.close()
         payload = {"out": str(out), "format": fmt, "conversations": len(files),
-                   "messages": sum(counts.values()),
+                   "messages": sum(1 for _ in messages),
                    "media_copied": copied if want_media else None,
-                   "media_dir": str(media_out) if want_media else None}
+                   "media_dir": str(media_out) if want_media else None,
+                   "data_cutoff": messages[-1]["send_time"] if messages else None,
+                   "freshness": freshness}
         output.emit(payload, command="messages export", as_json=args.json,
                     text=f"{payload['messages']} 条 / {payload['conversations']} 个会话 -> {out}"
                          + (f"；附件 {copied} 个 -> {media_out}" if want_media else ""))
@@ -908,10 +953,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("-v", "--verbose", action="store_true")
     a.set_defaults(func=cmd_accounts)
 
-    key = sub.add_parser("key", help="内存取 key / 校验 key")
+    key = sub.add_parser("key", help="本地读取材料与数据库校验")
     key_sub = key.add_subparsers(dest="key_cmd", required=True)
 
-    ks = key_sub.add_parser("scan", help="从运行中的 WXWork.exe 内存取 raw key")
+    ks = key_sub.add_parser("scan", help="准备并验证当前账号的本地读取材料")
     ks.add_argument("--account", help="corp id（`owc accounts` 里的目录名）")
     ks.add_argument("--db", help="用指定加密库做校验目标（不给则自动挑 session.db/message.db）")
     ks.add_argument("--step", type=int, default=4, help="扫描步长（默认 4，找不到可用 1）")
@@ -936,7 +981,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--with-index", action="store_true", help="同时快照 Index/*.db")
     s.set_defaults(func=cmd_snapshot)
 
-    dec = sub.add_parser("decrypt", help="解密快照 + WAL 回放 + quick_check")
+    dec = sub.add_parser("decrypt", help="生成可查询的本地数据目录（含一致性校验）")
     dec.add_argument("--snapshot", required=True)
     dec.add_argument("--out", required=True)
     dec.add_argument("--account")
@@ -1000,7 +1045,12 @@ def build_parser() -> argparse.ArgumentParser:
     me.add_argument("--since")
     me.add_argument("--until")
     me.add_argument("--query")
-    me.add_argument("--limit-per-conv", type=int, default=0)
+    me.add_argument("--limit", type=int, default=0,
+                    help="最多导出 N 条；配合 --order desc 获取最近 N 条")
+    me.add_argument("--order", default="asc", choices=("asc", "desc"),
+                    help="asc 按时间正序；desc 先取最新消息，输出稿仍按时间正序")
+    me.add_argument("--limit-per-conv", type=int, default=0,
+                    help="仅 txt 格式：每个会话最多写入 N 条")
     me.add_argument("--tz", default="local")
     me.add_argument("--account", help="corp id；用于自动定位附件目录")
     me.add_argument("--media-root", help="账号目录（含 Cache/CacheMapping），覆盖自动定位")
@@ -1066,7 +1116,8 @@ def main(argv: list[str] | None = None) -> int:
     command = " ".join(x for x in (args.cmd, getattr(args, "key_cmd", None),
                                     getattr(args, "sessions_cmd", None),
                                     getattr(args, "contacts_cmd", None),
-                                    getattr(args, "messages_cmd", None)) if x)
+                                    getattr(args, "messages_cmd", None),
+                                    getattr(args, "media_cmd", None)) if x)
     try:
         return int(args.func(args) or 0)
     except OwcError as err:

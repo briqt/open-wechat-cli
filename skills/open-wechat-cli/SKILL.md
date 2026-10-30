@@ -1,6 +1,6 @@
 ---
 name: open-wechat-cli
-description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话、联系人、消息、按时间/会话/关键词检索与导出，含图片、文件、语音、链接卡片与聊天记录（转发）的结构化抽取和附件落地。当用户说「看企业微信聊天记录」「查企微某个人/某个群的历史消息」「把企微消息导出成 jsonl/txt」「把群里的图片/语音/文件导出来」「统计企微消息」「企微 message.db 解密」时使用。只读，不发送、不改客户端。
+description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话、联系人、消息、按时间/会话/关键词检索、统计与导出，含图片、文件、语音、链接卡片和聊天记录（转发）的结构化抽取、附件落地与语音后处理。当用户说「看企业微信聊天记录」「查企微某个人/某个群的历史消息」「搜索/统计企微消息」「把企微消息导出成 jsonl/txt/md/html」「把群里的图片/语音/文件导出来」「企微 message.db 解密或已有 snapshot/decrypted 离线目录处理」「owc doctor/accounts/history/messages/key/snapshot/decrypt/schema/media」时使用。只读，不发送、不改客户端。
 ---
 
 # open-wechat-cli · 企业微信本地历史（Windows，只读）
@@ -9,11 +9,24 @@ description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话
 
 ## 什么时候用
 
-- 需要**读**企业微信本地聊天记录、会话列表、联系人或按关键词/时间检索消息。
-- 需要把消息导出成 JSONL 或按会话拆分的文本，包括图片、文件、语音、链接卡片和聊天记录（转发）。
+- 需要**读**企业微信本地聊天记录、会话列表、联系人，或按关键词/时间/会话检索消息。
+- 需要统计或导出消息为 JSONL、TXT、Markdown、HTML，包括图片、文件、语音、链接卡片和聊天记录（转发）。
+- 用户直接提到 `owc` 的环境诊断、账号发现、取 key、快照、解密、schema、history 或语音 decode 命令。
 - 需要排障：客户端版本、账号目录、库大小、解密是否通过 `quick_check`。
 
 不适用：发送消息、改资料、改客户端、个人微信（SQLCipher 4 另一套格式）、macOS 版企业微信。
+
+## Agent 路由
+
+1. 默认先执行 `owc doctor --json`，确认平台、WXWork 进程、账号、依赖；不要先猜账号目录。
+2. 用户目标是“最近/最新消息”时优先 `owc history --json --account <corp_id> --limit <N> --tz <TZ>`；需要最新数据时加 `--refresh`。
+3. 已有 `--db-dir` 的离线路径只代表该解密副本的内容，不保证实时；导出最近 N 条可用 `messages export --order desc --limit N`，结果会恢复时间正序，并在结果中给出 `data_cutoff` 与 `freshness`。
+4. 用户目标是会话/联系人/历史检索时走分步链路：`accounts` → `snapshot` → `decrypt` → `sessions|contacts|messages`。
+5. 用户目标是机器处理时始终加 `--json`；成功结果读 stdout，诊断读 stderr。失败时以退出码和 stderr 最后一行的 `ok:false` 错误信封为准，不把诊断行当结果。
+6. 只有用户明确要求进入技术排障时才用 `key scan`；普通查询不要使用 `--reveal-key`、`--key-hex`，也不要把 key 放进命令行历史。
+7. 翻页时原样回填 `next_cursor` 到同一命令的 `--cursor`，保持原有过滤条件、`--tz` 与 `--order`；不要混用 asc/desc 游标。
+
+常用命令默认值：`history` 为 `limit=20, order=desc, tz=local, max-age=600s`；`messages list/export` 为 `limit=50（list）, order=asc（list）, tz=local`；`sessions/contacts list` 为 `limit=50`。大范围导出优先 JSONL，Markdown/HTML 受 20000 条渲染上限约束。
 
 ## 前置检查（每次先做，别跳）
 
@@ -35,13 +48,47 @@ py -3 -c "import sys; print(sys.executable)"    # 拿真实解释器
 3. `accounts[]` 里挑 `has_message_db: true` 且 `last_activity` 最新的那个 `corp_id`。
 4. `pycryptodome: true`；`tz_database: ok`（缺 `tzdata` 时只能 `--tz local`）。
 
-## 主路径
+## Agent 路由与输出契约
 
-```bash
-owc history --account <corp_id> --limit 20 --tz Asia/Shanghai
+先判断输入：本机正在运行的 Windows WXWork 用实时路径；已有 `snapshot`/`decrypted` 目录直接走离线路径；在线企微发送、在线通讯录/微盘/会议、个人微信和 macOS 实时客户端不走本 Skill。
+
+| 用户目标 | 首选命令 |
+|---|---|
+| 最近消息/快速查看 | `history` |
+| 会话或联系人 | `sessions list` / `contacts list` |
+| 精确按会话、时间、关键词查询 | `messages list` |
+| 机器可继续处理的导出 | `messages export --format jsonl` |
+| 人工阅读稿 | `messages export --format md|html` |
+| 附件落地 | `messages export --copy-media` |
+| 语音转 wav | `--decode-voice` 或 `media decode` |
+| 环境/版本/库排障 | `doctor` → 按 `error.code` 执行 repair |
+
+Agent 默认使用 `--json`。成功从 stdout 解析 `envelope.data`；失败从 stderr 读取最后一行错误 envelope，并保留进程退出码：
+
+```json
+{"ok":true,"command":"messages list","schema":1,"data":{"items":[],"next_cursor":null},"meta":{}}
+{"ok":false,"command":"history","schema":1,"error":{"code":"PRECONDITION","message":"…","repair":"…"}}
 ```
 
-一条命令串起定位账号、key、数据库复制、解密和查询。key 缓存含敏感信息；Unix 上尝试 chmod 0600，Windows 需依靠目录和 NTFS ACL 保护，不能把 chmod 当作隔离保证。
+诊断行也在 stderr，不能当作结果。未知 `schema` 版本先停止并报告。不要把 `key_hex`、完整聊天正文、附件原文放入对话；优先返回导出路径。
+
+## 主路径
+
+Windows PowerShell 可复制模板：
+
+```powershell
+$Owc = '.venv\Scripts\owc.exe'
+& $Owc doctor --json
+& $Owc history --account <corp_id> --limit 20 --tz Asia/Shanghai --json
+```
+
+一条命令串起定位账号、key、数据库复制、解密和查询。需要附件或 Markdown/HTML 时，先从 history 返回的 `cache_dir` 定位解密目录，再执行：
+
+```powershell
+& $Owc messages export --db-dir <cache_dir>\decrypted\Data --conv <conv_id> --format jsonl --copy-media --media-out <out>\media --out <out>\messages.jsonl --account <corp_id> --json
+```
+
+`--key-file` 指向不存在或损坏的文件时会返回 `PRECONDITION`；去掉该参数让流程现场取 key，或先用 `key scan --key-file <路径>` 创建缓存。key 缓存含敏感信息；Unix 上尝试 chmod 0600，Windows 需依靠目录和 NTFS ACL 保护，不能把 chmod 当作隔离保证。
 
 需要复用已有解密结果时加 `--reuse`；换缓存目录用 `--cache-dir`。
 
@@ -60,7 +107,7 @@ owc messages list --db-dir <dec>/Data --conv <conv_id> --since 2026-10-01 --limi
 owc messages export --db-dir <dec>/Data --out <dir>/msgs.jsonl --since 2026-10-29 --copy-media
 ```
 
-`--json` 可放在子命令前后任意位置：stdout 只有结果信封；stderr 是 diag 行 +（失败时）最后一行的单行错误体。解析时取 stderr 最后一行。
+`--json` 可放在子命令前后任意位置：stdout 只有结果信封；stderr 是 diag 行 +（失败时）最后一行的单行错误体。解析时取 stderr 最后一行。`messages export --db-dir` 只读取指定副本；若副本不是刚刚通过 `history --refresh` 生成的，先检查返回的 `freshness.age_s` 与 `data_cutoff`，不要把生成时间当作数据最新时间。
 
 ## 附件、链接与转发
 
@@ -78,10 +125,11 @@ owc messages export --db-dir <dec>/Data --out <dir>/msgs.jsonl --since 2026-10-2
 
 ## 性能与重复执行
 
+以下是项目样本上的参考基准，不是所有机器、客户端版本或数据库的性能保证：
 - 大库（2 GB / 80 万条）上"按会话/按时间"的查询默认是全表扫描（1.3 s）；加一次 `--index` 会在解密副本上补索引，之后同类查询 7 ms。索引属于派生数据，`owc decrypt` 重建副本后需重新加一次。
-- `owc history` 默认 `--max-age 600`：解密产物还在且源库指纹未变就复用，复跑 0.2 s 而不是 30 s；要最新数据时报 `--refresh`。
+- `owc history` 默认 `--max-age 600`：解密产物还在且源库指纹未变就复用；要最新数据时报 `--refresh`。
 - `--copy-media` 优先硬链接（同卷不占额外磁盘），跨卷才复制；重复导出不会重复落地同一文件。
-- 抽取侧开销：单条约 68 µs（type 80 富文本 27 µs，聊天记录 640 µs），全库约 56 s；`owc messages` 每次都会读会话/联系人映射（约 50 ms），属正常固定成本。
+- 抽取侧开销随库内容和磁盘变化；`owc messages` 每次都会读会话/联系人映射，属正常固定成本。
 
 ## 结果怎么读
 
@@ -97,11 +145,13 @@ owc messages export --db-dir <dec>/Data --out <dir>/msgs.jsonl --since 2026-10-2
 
 | code | 含义 | 怎么做 |
 |---|---|---|
-| `PRECONDITION` | 客户端没运行 / 没登录 / 平台不对 / key 文件缺失 | 先登录企业微信再重跑；`--key-file` 指到不存在的文件会回退现场取 key |
+| `USAGE` | 参数缺失、值格式错误或时间无法解析 | 依照 `repair` 修正参数；Agent 重新执行同一命令并保留 `--json` |
+| `PRECONDITION` | 客户端没运行 / 没登录 / 平台不对 / key 文件缺失 | 先跑 `owc doctor --json`；`--key-file` 不存在时去掉该参数现场取 key，或先 `owc key scan --key-file <路径>` |
 | `KEY_NOT_FOUND` | 内存里没有通过校验的 key | 确认账号当前已登录；加 `--step 1` 放宽对齐；`--time-budget` 去掉让它扫完 |
-| `FORMAT_MISMATCH` | page1 结构或页大小不符 | 用 `owc key verify` 检查 key；保留脱敏的版本和错误信息，按不兼容处理，不输出未验证数据 |
-| `SNAPSHOT` | 库被独占锁定 / 空间不足 | 关掉占用窗口；换 `--out` 到空间足够的盘；2GB 库边写边拷撕裂时重拍一次 |
-| `DATA` | `quick_check` 不过 / 表列缺失 | 重跑 `owc snapshot`；仍失败看 `owc schema` 的列映射 |
+| `FORMAT_MISMATCH` | page1 结构或页大小不符 | 用 `owc key verify --db <db> --key-file <key.json>` 检查 key；版本不匹配时不要输出未验证数据 |
+| `SNAPSHOT` | 库被独占锁定 / 空间不足 | 关闭造成独占锁的窗口；换 `--out` 到空间足够的盘；边写边拷导致变化时重拍一次 |
+| `DATA` | `quick_check` 不过 / 表列缺失 / 解密结果不可用 | 重跑 `owc snapshot` 与 `owc decrypt`；仍失败先 `owc schema --db-dir <dec>/Data` |
+| `DEPENDENCY` | 缺 pycryptodome、tzdata 或 SILK 解码器 | 按 `repair` 安装依赖或提供解码器；不要把缺依赖当作空结果 |
 
 ## 边界（必须守住）
 

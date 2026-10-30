@@ -7,7 +7,7 @@
 ## 当前支持
 
 - Windows 企业微信 **5.0.13.6005 / PE32 / 4096 字节页**：已有真机验证记录。
-- 本地账号发现、进程内存候选密钥验证、数据库复制与离线解密。
+- 本地账号发现、读取准备、数据库工作副本与离线可查询数据目录。技术排障路径可验证本地读取材料，但普通查询无需接触原始材料。
 - 会话、联系人和消息列表；按会话、时间、关键词过滤；游标分页。
 - 消息结构抽取：多段文本与 @提及、图片、文件、语音（时长 + 缓存文件）、视频、文档/公众号/小程序/微盘链接卡片、聊天记录（合并转发，含子消息的文本与附件）。
 - 撤回：通知类消息用撤回表补出撤回者与时间（`recalled`）；撤回后残留的文件/视频（content_type 22）保留名字、体积、尺寸、时长与缩略图。
@@ -42,17 +42,22 @@ py -3 -m venv .venv
 owc doctor
 owc accounts -v
 
-# 首次会取 key、复制和解密数据库；默认显示最新消息
+# 首次准备本地工作副本；默认显示最近消息
 owc history --account <account-id> --limit 20 --tz Asia/Shanghai
+# 需要最新数据时强制刷新工作副本
+owc history --account <account-id> --limit 20 --tz Asia/Shanghai --refresh
 
 # 或分步执行，复用解密后的工作副本
+# 技术排障/分步准备（普通查询优先使用 history）
 owc key scan --account <account-id>
 owc snapshot --account <account-id> --out ./runtime/snapshot
 owc decrypt --snapshot ./runtime/snapshot --out ./runtime/decrypted --account <account-id>
 owc sessions list --db-dir ./runtime/decrypted/Data --limit 20
 owc contacts list --db-dir ./runtime/decrypted/Data --query <name>
 owc messages list --db-dir ./runtime/decrypted/Data --since 2026-10-01 --limit 50
-owc messages export --db-dir ./runtime/decrypted/Data --out ./runtime/export/messages.jsonl
+# 从指定副本导出最近 30 条；输出会包含 data_cutoff/freshness
+owc messages export --db-dir ./runtime/decrypted/Data --order desc --limit 30 --out ./runtime/export/messages.jsonl
+# 注意：--db-dir 只读取指定副本，不主动刷新；要最新数据先运行 history --refresh
 # 按会话/按时间查询是大库的主要瓶颈：给解密副本补一次索引（建一次，之后毫秒级）
 owc messages export --db-dir ./runtime/decrypted/Data --conv <conv-id> --index --out ./runtime/export/conv.jsonl
 # 连附件一起导出（图片/文件/语音：同卷硬链接、跨卷复制，语音补 .silk）
@@ -72,6 +77,7 @@ owc messages export --db-dir ./runtime/decrypted/Data --conv <conv-id> --out ./r
 - `--json` 支持放在子命令前后。成功结果写入 stdout 的 JSON 信封。
 - 诊断写入 stderr；JSON 模式下诊断为 JSON Lines，失败时最后一行为错误信封。
 - 错误包含 `code`、`message` 和适用时的 `repair`；参数解析错误仍由 argparse 输出 usage。
+- `messages export` 的结果包含 `data_cutoff`（内容最后一条消息时间）与 `freshness`（指定解密副本的可观测年龄）；生成时间不代表数据最新时间。
 - 列表结果提供 `next_cursor`，原样传给 `--cursor`；翻页时保持过滤条件和排序一致。
 - 时间包含时区偏移；消息同时提供 `send_time_epoch`。
 - 消息对象含 `link`、`media`、`segments`、`entries`、`forward`、`voice` 等结构；附件项的 `exists: false` 表示本地缓存里没有该文件。

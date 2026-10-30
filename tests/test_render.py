@@ -97,6 +97,26 @@ def test_html_escapes_and_renders_structures(tmp_path):
     assert "<style>" in html_doc and "</html>" in html_doc
 
 
+def test_rich_text_media_rendered_once(tmp_path):
+    """图文消息的附件同时在 media[] 和 entries[] 里，导出稿只能出现一次。"""
+    rel, path = _media(tmp_path, "inline.png")
+    item = {"kind": "image", "name": "inline.png", "size": 4, "width": 800, "height": 600,
+            "md5": None, "key": "ef" * 40, "duration_s": None,
+            "local_path": str(path), "exists": True, "copy": str(path)}
+    msg = _msg(message_id="m7", content_type=123, type_label="rich_text",
+               text="配图说明",
+               media=[item],
+               entries=[{"kind": "media", "type": 14, "media": item},
+                        {"kind": "text", "type": 2, "text": "配图说明"}])
+
+    md = render.to_markdown([msg], out_dir=tmp_path, title="群A")
+    html_doc = render.to_html([msg], out_dir=tmp_path, title="群A")
+    assert md.count("![](media/inline.png)") == 1
+    assert html_doc.count('<img src="media/inline.png"') == 1
+    assert md.count("配图说明") == 1
+    assert html_doc.count("配图说明") == 1
+
+
 def test_uncached_media_is_labelled(tmp_path):
     messages = [_msg(message_id="m9", content_type=14, type_label="image", text=None,
                      media=[{"kind": "image", "name": "gone.png", "size": 10, "width": 1,
