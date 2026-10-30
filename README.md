@@ -18,7 +18,30 @@
 
 当前是 alpha 版本。其他客户端版本、macOS 企业微信和个人微信尚未验证或实现；未被客户端缓存过的附件只能给出名称与字节数，语音未转码，撤回消息未还原。
 
-## 从源码安装
+## 安装（使用者）
+
+Skill 与 CLI 分开安装：Skill 由 Agent 平台安装，Python CLI 通过 `pipx` 安装。使用者不需要克隆源码仓库。
+
+安装 Skill：
+
+```bash
+npx skills add briqt/open-wechat-cli -g -y
+```
+
+安装 CLI（Windows 推荐）：
+
+```powershell
+py -3 -m pip install --user pipx
+py -3 -m pipx ensurepath
+# 重新打开终端后执行
+pipx install git+https://github.com/briqt/open-wechat-cli.git
+owc --version
+owc doctor --json
+```
+
+如果已经安装 `pipx`，直接执行最后两行即可。`npx` 只负责安装 Skill，`pipx` 负责安装 `owc` CLI；当前没有 `npx open-wechat-cli` 入口。
+
+## 从源码安装（开发者）
 
 需要 Python 3.10+ 和 Git。在运行企业微信的 **Windows 宿主机**上执行 PowerShell：
 

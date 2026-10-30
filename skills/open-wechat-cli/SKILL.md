@@ -1,11 +1,33 @@
 ---
 name: open-wechat-cli
-description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话、联系人、消息、按时间/会话/关键词检索、统计与导出，含图片、文件、语音、链接卡片和聊天记录（转发）的结构化抽取、附件落地与语音后处理。当用户说「看企业微信聊天记录」「查企微某个人/某个群的历史消息」「搜索/统计企微消息」「把企微消息导出成 jsonl/txt/md/html」「把群里的图片/语音/文件导出来」「企微 message.db 解密或已有 snapshot/decrypted 离线目录处理」「owc doctor/accounts/history/messages/key/snapshot/decrypt/schema/media」时使用。只读，不发送、不改客户端。
+description: 读取 Windows 企业微信本地历史，支持会话、联系人和消息查询，按时间、会话或关键词筛选，并导出 JSONL、TXT、Markdown、HTML 以及本地缓存的图片、文件、语音和视频。当用户要查看企微历史聊天、查找某个人或群的旧消息、搜索最近一段时间的图片或语音、导出聊天记录、整理本机企微历史，或给出 owc、WXWork 本地数据目录、snapshot、decrypted 目录时使用。实时读取需要 Windows 上已登录的企业微信；已有可查询数据目录可离线处理。只读取本地历史，不发送消息或修改客户端。
 ---
 
-# open-wechat-cli · 企业微信本地历史（Windows，只读）
+# open-wechat-cli · 企业微信本地历史查询与导出
 
-本 Skill 是 `owc` CLI 的调用说明，不另写一套逻辑。所有能力都在 CLI 里，Skill 只负责触发、前置检查、命令选择与错误恢复。
+`owc` CLI 与 Skill 分开分发；本 Skill 负责检查、安装和调用 CLI，业务能力由 CLI 提供。
+
+## CLI 安装与依赖
+
+先检查 CLI：
+
+```powershell
+owc --version
+```
+
+如果命令不存在，在 Windows 主机上安装 CLI：
+
+```powershell
+py -3 -m pip install --user pipx
+py -3 -m pipx ensurepath
+# 重新打开终端后执行
+pipx install git+https://github.com/briqt/open-wechat-cli.git
+owc --version
+```
+
+如果 `pipx` 已存在，直接执行安装和验证命令。CLI 运行依赖 Python 3.10+、`pycryptodome` 和 `tzdata`；这些依赖会由 pipx 环境自动安装。实时读取需要 Windows 上正在运行且已登录的企业微信；已有 `snapshot`/`decrypted` 目录可以离线处理。语音转 WAV 还需要外部 SILK 解码器。
+
+源码开发场景才使用 `pip install .`。
 
 ## 什么时候用
 
@@ -14,11 +36,11 @@ description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话
 - 用户直接提到 `owc` 的环境诊断、账号发现、取 key、快照、解密、schema、history 或语音 decode 命令。
 - 需要排障：客户端版本、账号目录、库大小、解密是否通过 `quick_check`。
 
-不适用：发送消息、改资料、改客户端、个人微信（SQLCipher 4 另一套格式）、macOS 版企业微信。
+不适用：发送消息、改资料、改客户端、个人微信实时读取、macOS 企业微信实时读取；已有可查询数据目录可离线处理。
 
 ## Agent 路由
 
-1. 默认先执行 `owc doctor --json`，确认平台、WXWork 进程、账号、依赖；不要先猜账号目录。
+1. 执行 `owc doctor --json`，根据平台、客户端状态、账号和依赖选择后续命令。
 2. 用户目标是“最近/最新消息”时优先 `owc history --json --account <corp_id> --limit <N> --tz <TZ>`；需要最新数据时加 `--refresh`。
 3. 已有 `--db-dir` 的离线路径只代表该解密副本的内容，不保证实时；导出最近 N 条可用 `messages export --order desc --limit N`，结果会恢复时间正序，并在结果中给出 `data_cutoff` 与 `freshness`。
 4. 用户目标是会话/联系人/历史检索时走分步链路：`accounts` → `snapshot` → `decrypt` → `sessions|contacts|messages`。
@@ -28,18 +50,23 @@ description: 读取 Windows 企业微信（WXWork 5.x）本地历史——会话
 
 常用命令默认值：`history` 为 `limit=20, order=desc, tz=local, max-age=600s`；`messages list/export` 为 `limit=50（list）, order=asc（list）, tz=local`；`sessions/contacts list` 为 `limit=50`。大范围导出优先 JSONL，Markdown/HTML 受 20000 条渲染上限约束。
 
-## 前置检查（每次先做，别跳）
+## 前置检查
 
-```bash
-owc doctor            # 或 owc doctor --json
+确认 CLI 可用后执行环境诊断：
+
+```powershell
+owc --version
+owc doctor --json
 ```
 
-如果 `owc` 启动失败，先区分环境错误：`No Python at ...` 检查基础解释器；`ModuleNotFoundError: open_wechat_cli` 检查本项目是否安装在当前 Python 环境中。不要仅凭错误现象推断解释器被系统删除：
+如果 `owc` 不存在，按“CLI 安装与依赖”安装。若安装后仍启动失败，再检查：
 
-```bash
-py -3 -c "import sys; print(sys.executable)"    # 拿真实解释器
-# 使用有效解释器新建 venv，再 python -m pip install .；开发安装见 CONTRIBUTING.md
+```powershell
+py -3 -c "import sys; print(sys.executable)"
+pipx list
 ```
+
+`No Python at ...` 表示 Python 路径失效；`ModuleNotFoundError: open_wechat_cli` 表示 pipx 环境安装不完整，执行 `pipx reinstall open-wechat-cli`。
 
 判断：
 
@@ -74,10 +101,10 @@ Agent 默认使用 `--json`。成功从 stdout 解析 `envelope.data`；失败�
 
 ## 主路径
 
-Windows PowerShell 可复制模板：
+Windows PowerShell 可复制模板。pipx 安装后直接使用 `owc`：
 
 ```powershell
-$Owc = '.venv\Scripts\owc.exe'
+$Owc = 'owc'
 & $Owc doctor --json
 & $Owc history --account <corp_id> --limit 20 --tz Asia/Shanghai --json
 ```
