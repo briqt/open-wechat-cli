@@ -78,7 +78,7 @@ def test_type_labels():
     assert extract.type_label(16) == "voice"
     assert extract.type_label(80) == "rich_card"
     assert extract.type_label(123) == "rich_text"
-    assert extract.type_label(9999) == "type9999"
+    assert extract.type_label(9999) == "other"   # 未登记类型统一标 other，不丢表达
     assert extract.type_label(None) == "unknown"
 
 

@@ -72,6 +72,7 @@ owc messages export --db-dir <dec>/Data --out <dir>/msgs.jsonl --since 2026-10-2
 - 撤回通知（`system`/`recall`）如果有对应撤回记录，`text` 会是"该消息已被撤回"，`recalled{revoker_id,revoked_at}` 给撤回者与时间；拿不到就保持空正文，不猜。
 - 引用回复落在 `quote{sender_name,title,text,forward,media}`；图片 OCR 落在 `media[].ocr`；卡片/小程序标题等附属文本落在 `extra_text`——它们不混进 `text`，但 `--query` 会一起检索。
 - 语音是 SILK v3（`\x02#!SILK_V3`），播放前用 `owc media decode --in <目录> --out <目录>` 转 wav；解码器由外部提供（`--decoder` 模板 / `OWC_SILK_DECODER` / PATH 上的 `silk_v3_decoder`），导出加 `--decode-voice` 会在复制后顺手转码，缺解码器时给 `DEPENDENCY` 而不是静默跳过。
+- 导出可以不给 `--out`：默认 `<状态目录>/export/<会话或 all>/`，附件在同级 `media/`；引用一律相对路径（`media/x.png` 或 `../assets/x.png`），JSONL 的 `copy` 相对导出文件、`copy_abs` 是绝对路径。
 - 要给人看时用 `--format md`（Markdown）或 `--format html`（单文件 HTML，内嵌样式）：按天分组、图片内嵌、引用与转发展开、语音给时长与文件链接；这两种格式默认复制附件，图片引用相对路径。渲染上限 20000 条。
 
 ## 性能与重复执行

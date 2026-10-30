@@ -40,6 +40,22 @@ DEFAULT_KEY_DIR = Path(
 MAX_RENDER = 20000
 
 
+def _export_root() -> Path:
+    """默认导出根目录：跟 keys/cache 同一个状态目录，不往当前目录乱写。"""
+    return Path(
+        os.environ.get("OWC_STATE_DIR")
+        or (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "open-wechat-cli")
+    ) / "export"
+
+
+def _default_export_out(fmt: str, conv: str | None) -> Path:
+    """没给 --out 时的落点：<state>/export/<会话或 all>/messages.<ext>（txt 是目录）。"""
+    base = _export_root() / media.sanitize_name(conv or "all", "all")
+    if fmt == "txt":
+        return base / "txt"
+    return base / f"messages.{fmt}"
+
+
 # --------------------------------------------------------------------------- #
 # key 文件
 # --------------------------------------------------------------------------- #
@@ -581,10 +597,15 @@ def cmd_messages_export(args) -> int:
     _maybe_index(store, getattr(args, "index", False))
     since = _parse_when(args.since, args.tz)
     until = _parse_when(args.until, args.tz)
-    out = Path(args.out)
     fmt = args.format
+    out = Path(args.out) if args.out else _default_export_out(fmt, args.conv)
     want_media = args.copy_media or fmt in ("md", "html")
-    media_out = Path(args.media_out) if args.media_out else out.parent / "media"
+    if args.media_out:
+        media_out = Path(args.media_out)
+    elif fmt == "txt":
+        media_out = out / "media"
+    else:
+        media_out = out.parent / "media"
     seen: dict[str, str] = {}
     copied = 0
 
@@ -633,6 +654,24 @@ def cmd_messages_export(args) -> int:
     if fmt in ("md", "html"):
         return _export_rendered(args, store, since, until, fmt, out, media_out, copied)
 
+    base_dir = out.parent.resolve()
+
+    def relativize(msg: dict) -> None:
+        """JSONL 里的附件路径写成相对导出文件的路径，整目录搬走也能用。"""
+        items = list(msg.get("media") or [])
+        for fwd_item in (msg.get("forward") or {}).get("items") or []:
+            items.extend(fwd_item.get("media") or [])
+        for item in items:
+            raw = item.get("copy")
+            if not raw:
+                continue
+            try:
+                item["copy_abs"] = str(Path(raw).resolve())
+                item["copy"] = Path(os.path.relpath(str(Path(raw).resolve()),
+                                                   start=str(base_dir))).as_posix()
+            except (OSError, ValueError):
+                continue
+
     if fmt == "jsonl":
         out.parent.mkdir(parents=True, exist_ok=True)
         count = 0
@@ -640,6 +679,7 @@ def cmd_messages_export(args) -> int:
             for msg in store.iter_messages(conv=args.conv, since=since, until=until,
                                            query=args.query, tz_name=args.tz):
                 prepare(msg)
+                relativize(msg)
                 fh.write(json.dumps(msg, ensure_ascii=False) + "\n")
                 count += 1
         payload = {"out": str(out), "format": fmt, "messages": count,
@@ -954,7 +994,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     me = msg_sub.add_parser("export")
     me.add_argument("--db-dir", required=True)
-    me.add_argument("--out", required=True)
+    me.add_argument("--out", help="输出文件/目录；不给就落到状态目录的 export/ 下")
     me.add_argument("--format", default="jsonl", choices=("jsonl", "txt", "md", "html"))
     me.add_argument("--conv")
     me.add_argument("--since")

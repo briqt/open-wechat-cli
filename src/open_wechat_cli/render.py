@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,7 +72,12 @@ def _day(msg: dict) -> str:
 
 
 def _media_src(item: dict, out_dir: Path) -> tuple[str | None, bool]:
-    """返回 (可用的引用路径, 是否指向真实文件)。"""
+    """返回 (相对引用路径, 是否指向真实文件)。
+
+    导出稿要能整目录搬走/发给别人，所以永远输出**相对** out_dir 的路径：
+    资源在子目录就是 `media/x.png`，在别处就是 `../assets/x.png`，
+    绝不把 `C:/Users/...` 这种机器路径写进 Markdown / HTML。
+    """
     for key in ("copy", "local_path"):
         raw = item.get(key)
         if not raw:
@@ -80,10 +86,10 @@ def _media_src(item: dict, out_dir: Path) -> tuple[str | None, bool]:
         if not path.exists():
             continue
         try:
-            rel = path.resolve().relative_to(out_dir.resolve())
-            return rel.as_posix(), True
-        except ValueError:
-            return path.as_posix(), True
+            rel = os.path.relpath(str(path.resolve()), start=str(Path(out_dir).resolve()))
+        except (OSError, ValueError):
+            rel = path.name
+        return Path(rel).as_posix(), True
     return (item.get("name") or None), False
 
 

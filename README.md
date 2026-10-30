@@ -74,6 +74,8 @@ owc messages export --db-dir ./runtime/decrypted/Data --conv <conv-id> --out ./r
 - 列表结果提供 `next_cursor`，原样传给 `--cursor`；翻页时保持过滤条件和排序一致。
 - 时间包含时区偏移；消息同时提供 `send_time_epoch`。
 - 消息对象含 `link`、`media`、`segments`、`entries`、`forward`、`voice` 等结构；附件项的 `exists: false` 表示本地缓存里没有该文件。
+- `--out` 可省略：默认写到 `<状态目录>/export/<会话或 all>/messages.<ext>`（状态目录可用 `OWC_STATE_DIR` 覆盖），附件默认放同级 `media/`。
+- 导出的资源引用**永远是相对路径**：默认 `media/x.png`，`--media-out` 指到别处时是 `../assets/x.png`；JSONL 里的 `copy` 同样是相对导出文件的路径（绝对路径另存 `copy_abs`），整个目录搬到别的机器仍能直接打开。
 - `--format md|html` 产出人工阅读稿：按天分组、图片内嵌、链接卡片、转发子消息缩进展示、语音给时长与文件；渲染上限 20000 条，超大范围请先用 JSONL。
 - `--index` 在解密副本上补查询索引（`conversation_id, send_time` 与 `send_time`）：一次性约 4 s / +24 MB，按会话查询从 1.3 s 降到毫秒级；删掉解密副本即回收。
 - `history` 默认带 `--max-age 600`：解密产物还在、源库大小/时间戳没变就跳过复制+解密（首次 30 s → 复跑 0.2 s）；`--refresh` 强制重建，`--reuse` 保持原语义。

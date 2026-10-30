@@ -177,7 +177,7 @@ def _first_str(fm, no: int) -> str | None:
 def type_label(content_type: int | None) -> str:
     if content_type is None:
         return "unknown"
-    return TYPE_LABELS.get(content_type, f"type{content_type}")
+    return TYPE_LABELS.get(content_type, "other")
 
 
 def looks_like_ref(text: str) -> bool:
@@ -294,7 +294,7 @@ def _media_descriptor(buf: bytes | None, kind: str, duration_field: int | None =
     if not name:
         # 视频文件名在 `1` 或 `107`；老版本这两处可能都是资源键，不能拿键当名字
         if kind == "video":
-            for candidate in (_first_str(fm, 107), _first_str(fm, 1)):
+            for candidate in (_first_str(fm, 20), _first_str(fm, 107), _first_str(fm, 1)):
                 if candidate and not media.is_ascii_hex(candidate):
                     name = candidate.lstrip("/")
                     name_source = "message"
@@ -305,9 +305,16 @@ def _media_descriptor(buf: bytes | None, kind: str, duration_field: int | None =
             if seed:
                 name = f"{kind}-{seed}"
                 name_source = "synthetic"
-    return {"kind": kind, "name": name, "name_source": name_source, "ext": ext, "size": size,
-            "width": width, "height": height, "md5": md5, "key": key,
-            "duration_s": duration_s, "source": "cache"}
+    out = {"kind": kind, "name": name, "name_source": name_source, "ext": ext, "size": size,
+           "width": width, "height": height, "md5": md5, "key": key,
+           "duration_s": duration_s, "source": "cache"}
+    if kind == "video":
+        # 视频卡片里常带发送前本机路径（/Volumes/... 或 D:\...），留着便于溯源
+        source_path = (_first_str(fm, 202) or _first_str(fm, 107)
+                       or _first_str(fm, 1))
+        if source_path and (source_path.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", source_path)):
+            out["source_path"] = source_path
+    return out
 
 
 _MEDIA_EXT = {
@@ -401,7 +408,13 @@ def _quote(fm) -> dict | None:
                     quote["text"] = _clean("\n".join(
                         e["text"] for e in entries if e.get("text") and e.get("source") != "ocr"))
                     quote["media"] = [e["media"] for e in entries if e["kind"] == "media"]
-        if any(quote.get(k) for k in ("sender_name", "title", "text", "forward")):
+        # 被引用的内容自己也带 OCR（比如引用了一张截图）
+        inner_meta = _fmap(_first_len(inner, 17))
+        if inner_meta:
+            ocr = [t for _, t in _ocr_pairs(inner_meta) if t]
+            if ocr:
+                quote["ocr"] = [{"text": t} for t in ocr]
+        if any(quote.get(k) for k in ("sender_name", "title", "text", "forward", "ocr")):
             return quote
     return None
 
@@ -1201,6 +1214,9 @@ def _extract_into(content_type: int | None, content: bytes, out: dict) -> None:
 
     if ct in _CARD_TYPES and not out["forward"]:
         _append_unclaimed(out, content)
+    elif ct not in _TYPE_HANDLERS and ct not in _MEDIA_TYPES and not out["forward"]:
+        # 没登记的类型：兜底之后再把剩余人话收进来，别因为不认识就整条丢掉
+        _append_unclaimed(out, content)
 
     meta = _fmap(_first_len(fm, 17))
     if meta:
@@ -1288,6 +1304,7 @@ def searchable(body: dict) -> str:
     parts.extend([link.get("title") or "", link.get("desc") or "", link.get("url") or ""])
     parts.extend(str(v) for v in (link.get("extra") or {}).values() if isinstance(v, str))
     parts.extend(m.get("name") or "" for m in body.get("media") or [])
+    parts.extend(m.get("source_path") or "" for m in body.get("media") or [])
     parts.extend(m.get("ocr") or "" for m in body.get("media") or [])
     parts.extend(e.get("text") or "" for e in body.get("entries") or [])
 
@@ -1298,6 +1315,7 @@ def searchable(body: dict) -> str:
                       quote.get("text") or ""])
         for m in quote.get("media") or []:
             parts.append(m.get("name") or "")
+        parts.extend(o.get("text") or "" for o in quote.get("ocr") or [])
         walk_forward(quote.get("forward"))
 
     def walk_forward(fwd: dict | None) -> None:
@@ -1314,6 +1332,7 @@ def searchable(body: dict) -> str:
             parts.extend(str(v) for v in (inner.get("extra") or {}).values()
                          if isinstance(v, str))
             parts.extend(m.get("name") or "" for m in item.get("media") or [])
+            parts.extend(m.get("source_path") or "" for m in item.get("media") or [])
             parts.extend(m.get("ocr") or "" for m in item.get("media") or [])
             parts.extend(e.get("text") or "" for e in item.get("entries") or [])
             walk_quote(item.get("quote"))
