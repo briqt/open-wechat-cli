@@ -84,8 +84,9 @@ class MediaIndex:
             return None
         mtype, file_name = row
         kind, sub = MAPPING_KINDS.get(mtype, (f"type{mtype}", None))
-        raw = Path(file_name)
-        path = raw if raw.is_absolute() else (self.root / sub / file_name if sub else raw)
+        normalized = str(file_name).replace("\\", "/")
+        raw = Path(normalized)
+        path = raw if raw.is_absolute() else (self.root / sub / normalized if sub else raw)
         try:
             exists = path.exists()
             size = path.stat().st_size if exists else None

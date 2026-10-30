@@ -383,6 +383,16 @@ def cmd_contacts(args) -> int:
     return 0
 
 
+def cmd_messages_stats(args) -> int:
+    store = Store(args.db_dir)
+    since = _parse_when(args.since, args.tz)
+    until = _parse_when(args.until, args.tz)
+    payload = store.message_stats(since=since, until=until, conv=args.conv, tz_name=args.tz)
+    output.emit(payload, command="messages stats", as_json=args.json,
+                text=f"{payload['messages']} 条 / {payload['conversations']} 个会话")
+    return 0
+
+
 def cmd_messages_list(args) -> int:
     store = Store(args.db_dir, account_root=_media_root(args.media_root, args.account, args.db_dir))
     _maybe_index(store, getattr(args, "index", False))
@@ -1018,6 +1028,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     msg = sub.add_parser("messages", help="消息查询与导出")
     msg_sub = msg.add_subparsers(dest="messages_cmd", required=True)
+    ms = msg_sub.add_parser("stats", help="按会话聚合消息事实")
+    ms.add_argument("--db-dir", required=True)
+    ms.add_argument("--conv")
+    ms.add_argument("--since")
+    ms.add_argument("--until")
+    ms.add_argument("--tz", default="local")
+    ms.set_defaults(func=cmd_messages_stats)
     ml = msg_sub.add_parser("list")
     ml.add_argument("--db-dir", required=True)
     ml.add_argument("--conv")

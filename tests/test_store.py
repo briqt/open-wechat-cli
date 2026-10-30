@@ -106,6 +106,18 @@ def test_messages_time_filter_and_cursor(db_dir):
     assert page2["items"][0]["message_id"] == "m3"
 
 
+def test_message_stats_returns_raw_conversation_facts(db_dir):
+    s = store.Store(str(db_dir))
+    result = s.message_stats(since=1_700_000_050, until=1_700_000_250, tz_name="UTC")
+    assert result["messages"] == 2
+    assert result["conversations"] == 2
+    by_id = {item["conv_id"]: item for item in result["items"]}
+    assert by_id["c1"]["messages"] == 1
+    assert by_id["c1"]["senders"] == 1
+    assert by_id["c1"]["content_types"] == {"2": 1}
+    assert by_id["c2"]["last_message"].endswith("+00:00")
+
+
 def test_messages_conv_filter(db_dir):
     s = store.Store(str(db_dir))
     page = s.messages(limit=10, conv="c2")

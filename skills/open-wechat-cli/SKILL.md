@@ -15,14 +15,26 @@ description: 读取 Windows 企业微信本地历史，支持会话、联系人�
 owc --version
 ```
 
-如果命令不存在，在 Windows 主机上安装 CLI：
+如果命令不存在，在 Windows 主机上安装 CLI。已有 `uv` 时优先使用：
+
+```powershell
+uv tool install git+https://github.com/briqt/open-wechat-cli.git
+```
+
+否则使用 pipx：
 
 ```powershell
 py -3 -m pip install --user pipx
 py -3 -m pipx ensurepath
 # 重新打开终端后执行
 pipx install git+https://github.com/briqt/open-wechat-cli.git
-owc --version
+```
+
+安装后验证：
+
+```powershell
+$Owc = if (Get-Command owc -ErrorAction SilentlyContinue) { 'owc' } else { "$env:USERPROFILE\.local\bin\owc.exe" }
+& $Owc --version
 ```
 
 如果 `pipx` 已存在，直接执行安装和验证命令。CLI 运行依赖 Python 3.10+、`pycryptodome` 和 `tzdata`；这些依赖会由 pipx 环境自动安装。实时读取需要 Windows 上正在运行且已登录的企业微信；已有 `snapshot`/`decrypted` 目录可以离线处理。语音转 WAV 还需要外部 SILK 解码器。
@@ -33,7 +45,7 @@ owc --version
 
 - 需要**读**企业微信本地聊天记录、会话列表、联系人，或按关键词/时间/会话检索消息。
 - 需要统计或导出消息为 JSONL、TXT、Markdown、HTML，包括图片、文件、语音、链接卡片和聊天记录（转发）。
-- 用户直接提到 `owc` 的环境诊断、账号发现、取 key、快照、解密、schema、history 或语音 decode 命令。
+- 用户直接提到 `owc` 的环境诊断、账号发现、取 key、快照、解密、schema、history、messages stats 或语音 decode 命令。
 - 需要排障：客户端版本、账号目录、库大小、解密是否通过 `quick_check`。
 
 不适用：发送消息、改资料、改客户端、个人微信实时读取、macOS 企业微信实时读取；已有可查询数据目录可离线处理。
@@ -43,10 +55,11 @@ owc --version
 1. 执行 `owc doctor --json`，根据平台、客户端状态、账号和依赖选择后续命令。
 2. 用户目标是“最近/最新消息”时优先 `owc history --json --account <corp_id> --limit <N> --tz <TZ>`；需要最新数据时加 `--refresh`。
 3. 已有 `--db-dir` 的离线路径只代表该解密副本的内容，不保证实时；导出最近 N 条可用 `messages export --order desc --limit N`，结果会恢复时间正序，并在结果中给出 `data_cutoff` 与 `freshness`。
-4. 用户目标是会话/联系人/历史检索时走分步链路：`accounts` → `snapshot` → `decrypt` → `sessions|contacts|messages`。
-5. 用户目标是机器处理时始终加 `--json`；成功结果读 stdout，诊断读 stderr。失败时以退出码和 stderr 最后一行的 `ok:false` 错误信封为准，不把诊断行当结果。
-6. 只有用户明确要求进入技术排障时才用 `key scan`；普通查询不要使用 `--reveal-key`、`--key-hex`，也不要把 key 放进命令行历史。
-7. 翻页时原样回填 `next_cursor` 到同一命令的 `--cursor`，保持原有过滤条件、`--tz` 与 `--order`；不要混用 asc/desc 游标。
+4. 用户要按时间窗口汇总会话时使用 `messages stats`；它只返回消息数、发言人数、首末时间和 content type 计数，不判断“活跃”“重要”等语义。
+5. 用户目标是会话/联系人/历史检索时走分步链路：`accounts` → `snapshot` → `decrypt` → `sessions|contacts|messages`。
+6. 用户目标是机器处理时始终加 `--json`；成功结果读 stdout，诊断读 stderr。失败时以退出码和 stderr 最后一行的 `ok:false` 错误信封为准，不把诊断行当结果。
+7. 只有用户明确要求进入技术排障时才用 `key scan`；普通查询不要使用 `--reveal-key`、`--key-hex`，也不要把 key 放进命令行历史。
+8. 翻页时原样回填 `next_cursor` 到同一命令的 `--cursor`，保持原有过滤条件、`--tz` 与 `--order`；不要混用 asc/desc 游标。
 
 常用命令默认值：`history` 为 `limit=20, order=desc, tz=local, max-age=600s`；`messages list/export` 为 `limit=50（list）, order=asc（list）, tz=local`；`sessions/contacts list` 为 `limit=50`。大范围导出优先 JSONL，Markdown/HTML 受 20000 条渲染上限约束。
 
@@ -83,6 +96,7 @@ pipx list
 |---|---|
 | 最近消息/快速查看 | `history` |
 | 会话或联系人 | `sessions list` / `contacts list` |
+| 按时间窗口聚合会话原始事实 | `messages stats` |
 | 精确按会话、时间、关键词查询 | `messages list` |
 | 机器可继续处理的导出 | `messages export --format jsonl` |
 | 人工阅读稿 | `messages export --format md|html` |

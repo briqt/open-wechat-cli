@@ -629,6 +629,62 @@ class Store:
             "counts": self.counts() if with_counts else None,
         }
 
+    def message_stats(self, *, since=None, until=None, conv=None,
+                      tz_name=None) -> dict:
+        """按会话聚合原始消息事实，不对活跃度或重要性做判断。"""
+        spec = self.schema()["message"]
+        if not spec:
+            raise DataError("message.db 里没找到消息表", repair="确认 message.db 已解密并通过 quick_check")
+        cols = spec.columns
+        where: list[str] = []
+        params: list = []
+        if since is not None:
+            where.append(f'"{cols["time"]}" >= ?')
+            params.append(int(since))
+        if until is not None:
+            where.append(f'"{cols["time"]}" <= ?')
+            params.append(int(until))
+        if conv:
+            where.append(f'"{cols["conv"]}" = ?')
+            params.append(conv)
+        clause = " where " + " and ".join(where) if where else ""
+        base = f'from "{spec.table}"{clause}'
+        con = self._connect("message.db")
+        try:
+            rows = con.execute(
+                f'select "{cols["conv"]}", count(*), count(distinct "{cols["sender"]}"), '
+                f'min("{cols["time"]}"), max("{cols["time"]}") {base} '
+                f'group by "{cols["conv"]}" order by max("{cols["time"]}") desc'
+                , params).fetchall()
+            type_rows = con.execute(
+                f'select "{cols["conv"]}", "{cols["type"]}", count(*) {base} '
+                f'group by "{cols["conv"]}", "{cols["type"]}"', params).fetchall()
+        finally:
+            con.close()
+        types: dict[str, dict[str, int]] = {}
+        for cid, ctype, count in type_rows:
+            types.setdefault(_s(cid) or "", {})[str(_int(ctype))] = int(count)
+        convs = self.conversations()
+        tz = _tz(tz_name)
+        items = []
+        for cid, count, senders, first, last in rows:
+            cid_s = _s(cid) or ""
+            info = convs.get(cid_s, {})
+            items.append({
+                "conv_id": cid_s,
+                "conv_name": info.get("name", cid_s),
+                "messages": int(count),
+                "senders": int(senders),
+                "first_message": iso_time(first, tz),
+                "last_message": iso_time(last, tz),
+                "content_types": types.get(cid_s, {}),
+            })
+        return {
+            "items": items,
+            "conversations": len(items),
+            "messages": sum(x["messages"] for x in items),
+        }
+
     def counts(self) -> dict:
         spec = self.schema()["message"]
         if not spec:

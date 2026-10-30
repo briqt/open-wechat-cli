@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.0a9 — 2026-10-30
+
+- 新增窄范围原子事实查询 `messages stats`：按时间窗口和会话聚合消息数、发言人数、首末时间与 content type 计数，不定义“活跃”“重要”等上层语义。
+- Skill 增加 `messages stats` 路由、统计口径说明，以及 uv/pipx CLI 安装与 `.local\\bin\\owc.exe` 路径兜底。
+- 保持能力边界：不新增活跃度、热度、真人讨论等结论型命令，避免 Agent 猜测内部 schema 或自行扫描大体量导出。
+- 修复跨平台附件映射：Windows CacheMapping 中的反斜杠路径在 Linux/macOS 离线处理时统一为可解析路径，恢复导出和媒体测试在 CI 中的行为。
+
 ## 0.1.0a8 — 2026-10-30
 
 - Skill 分发说明收口：Skill 默认已由 Agent 平台提供，CLI 独立通过 pipx 从 GitHub 安装；不要求使用者克隆源码仓库。
