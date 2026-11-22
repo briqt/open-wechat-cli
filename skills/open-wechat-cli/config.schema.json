@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "open-wechat-cli configuration",
+  "description": "Configuration for open-wechat-cli (~/.config/agent-skills/open-wechat-cli/config.json)",
+  "type": "object",
+  "properties": {
+    "default_account": {
+      "type": "string",
+      "description": "Default WeCom corp_id account directory name (empty to auto-select the most recently active chat account)",
+      "default": ""
+    },
+    "tz": {
+      "type": "string",
+      "description": "Default timezone for query and export output ('local' or IANA name such as 'Asia/Shanghai')",
+      "default": "local"
+    },
+    "data_root": {
+      "type": "string",
+      "description": "Optional override for WeCom local data root directory (empty to use platform default)",
+      "default": ""
+    },
+    "silk_decoder": {
+      "type": "string",
+      "description": "Optional path or command template for external SILK v3 voice decoder",
+      "default": ""
+    },
+    "disable_update_check": {
+      "type": "boolean",
+      "description": "Disable periodic version update and announcement check",
+      "default": false
+    }
+  },
+  "additionalProperties": false
+}

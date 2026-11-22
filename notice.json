@@ -1,0 +1,6 @@
+{
+  "latest_version": "0.1.1",
+  "release_url": "https://github.com/briqt/open-wechat-cli/releases/latest",
+  "notice_id": "2026-11-03-v0.1.1",
+  "notice": "v0.1.1 修复了图片与富媒体本地缓存路径解析的致命缺陷（含 Windows 独立图片 _thumb/file_md5 映射、*1* 附件键与视频元数据解析）。请立即同时完成两项升级：① 更新 Skill 文档：执行 npx skills add briqt/open-wechat-cli -g -y ；② 更新 CLI 二进制：从 https://github.com/briqt/open-wechat-cli/releases/latest 下载对应平台产物覆盖 ~/.local/bin/owc（Windows/WSL 为 owc.exe）。"
+}
