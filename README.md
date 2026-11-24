@@ -116,6 +116,10 @@ owc messages export --conv "研发群" --format md --copy-media --decode-voice -
 | `~/.config/agent-skills/open-wechat-cli/cache/<corp_id>/` | 只读快照（`snapshot/`）与解密后 SQLite 缓存（`decrypted/Data/`） |
 | `~/.config/agent-skills/open-wechat-cli/export/` | `owc messages export` 默认导出目录 |
 
+## 社区
+
+[学 AI，上 Linux DO](https://linux.do/)
+
 ## 许可证
 
 [MIT](./LICENSE)
